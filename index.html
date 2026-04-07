@@ -56,15 +56,16 @@ h1 {
 .controls {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  width: min(90vw, 440px);
+  justify-content: center;
+  width: min(94vw, 480px);
   margin-bottom: 8px;
-  gap: 8px;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 .speed-group {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
 }
 .ctrl-label {
   font-size: .72rem;
@@ -72,7 +73,7 @@ h1 {
   letter-spacing: .08em;
   text-transform: uppercase;
 }
-.spd-btn, #restart-btn {
+.btn {
   background: rgba(255,255,255,0.06);
   border: 1px solid rgba(255,255,255,0.1);
   color: #9ca3af;
@@ -85,16 +86,49 @@ h1 {
   transition: background .2s, color .2s, border-color .2s;
   font-family: inherit;
 }
-.spd-btn:hover, #restart-btn:hover {
+.btn:hover {
   background: rgba(255,255,255,0.1);
   color: #e2e8f0;
 }
-.spd-btn.active {
+.btn.active {
   background: rgba(255,255,255,0.14);
   border-color: rgba(255,255,255,0.25);
   color: #f1f5f9;
 }
-#restart-btn, #shuffle-btn { padding: 5px 14px; }
+.btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* Start button — green accent */
+#start-btn {
+  background: rgba(74,222,128,0.15);
+  border-color: rgba(74,222,128,0.35);
+  color: #4ade80;
+  padding: 5px 16px;
+}
+#start-btn:hover:not(:disabled) {
+  background: rgba(74,222,128,0.25);
+  color: #86efac;
+}
+
+/* Record button */
+#rec-btn.recording {
+  background: rgba(239,68,68,0.18);
+  border-color: rgba(239,68,68,0.45);
+  color: #f87171;
+  animation: recPulse 1s infinite;
+}
+@keyframes recPulse {
+  0%,100% { opacity:1; }
+  50%     { opacity:.65; }
+}
+
+/* Sound muted */
+#sound-btn.muted {
+  color: #ef4444;
+  border-color: rgba(239,68,68,0.3);
+}
 
 /* ── SCOREBOARD ───────────────────────────────── */
 .score {
@@ -111,9 +145,7 @@ h1 {
   border-radius: 10px;
   padding: 7px 11px;
   border: 1px solid transparent;
-  cursor: pointer;
   transition: border-color .35s, background .35s;
-  position: relative;
   overflow: hidden;
 }
 .row:hover { background: rgba(255,255,255,0.06); }
@@ -127,7 +159,6 @@ h1 {
   100% { background: rgba(255,255,255,0.035); }
 }
 .dot { width:11px; height:11px; border-radius:50%; flex-shrink:0; }
-.bname { font-size:.82rem; font-weight:700; width:74px; color:#e2e8f0; }
 .bdesc { font-size:.68rem; color:#4b5563; flex:1; transition: color .2s; }
 .bar { width:80px; height:5px; background:rgba(255,255,255,0.08); border-radius:3px; overflow:hidden; flex-shrink:0; }
 .bar-fill { height:100%; border-radius:3px; width:0%; transition: width .45s ease; }
@@ -149,7 +180,6 @@ h1 {
 }
 .strat-select:focus { border-color: rgba(255,255,255,0.3); }
 .strat-select option { background: #1f2937; color: #e2e8f0; }
-#sound-btn.muted { color: #ef4444; border-color: rgba(239,68,68,0.3); }
 </style>
 </head>
 <body>
@@ -157,30 +187,40 @@ h1 {
 <h1>Territory War</h1>
 <p class="sub">4 algorithms fight for space</p>
 <canvas id="canvas"></canvas>
-<div id="msg"></div>
+<div id="msg">Pick strategies & press Start</div>
 
 <div class="controls">
   <div class="speed-group">
     <span class="ctrl-label">Speed</span>
-    <button class="spd-btn" data-ms="90" data-spd="3">Slow</button>
-    <button class="spd-btn active" data-ms="40" data-spd="6">Normal</button>
-    <button class="spd-btn" data-ms="14" data-spd="12">Fast</button>
+    <button class="btn" data-ms="90" data-spd="3">Slow</button>
+    <button class="btn active" data-ms="40" data-spd="6">Normal</button>
+    <button class="btn" data-ms="14" data-spd="12">Fast</button>
   </div>
-  <button id="restart-btn">↺ Restart</button>
-  <button id="shuffle-btn">⚄ Shuffle</button>
-  <button id="sound-btn">🔊</button>
+  <button class="btn" id="start-btn">▶ Start</button>
+  <button class="btn" id="shuffle-btn">⚄ Shuffle</button>
+  <button class="btn" id="sound-btn">🔊</button>
+  <button class="btn" id="rec-btn">⏺ Rec</button>
 </div>
 
 <div class="score" id="score"></div>
 
 <script>
-// ─── SOUND SYSTEM ─────────────────────────────────────────────────────────
-let audioCtx = null;
-let soundOn  = true;
+// ═══════════════════════════════════════════════════════════════════════════
+// SOUND SYSTEM  — Web Audio API, no external files
+// ═══════════════════════════════════════════════════════════════════════════
+let audioCtx  = null;
+let audioDest  = null;   // MediaStreamDestination for recording audio
+let soundOn   = true;
 
 function ensureAudio() {
   if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+// Route a GainNode to speakers + the recording stream (if active)
+function routeGain(gain) {
+  gain.connect(audioCtx.destination);
+  if (audioDest) gain.connect(audioDest);
 }
 
 function tone(freq, dur, vol = 0.25, type = 'sine', delay = 0) {
@@ -188,7 +228,7 @@ function tone(freq, dur, vol = 0.25, type = 'sine', delay = 0) {
   const osc  = audioCtx.createOscillator();
   const gain = audioCtx.createGain();
   osc.connect(gain);
-  gain.connect(audioCtx.destination);
+  routeGain(gain);
   osc.type = type;
   osc.frequency.value = freq;
   const t = audioCtx.currentTime + delay;
@@ -211,7 +251,6 @@ function playGo() {
 
 function playTickSound() {
   if (!soundOn || !audioCtx) return;
-  // Soft noise blip — pitched low so it doesn't fatigue
   const buf  = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.025, audioCtx.sampleRate);
   const data = buf.getChannelData(0);
   for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
@@ -223,42 +262,99 @@ function playTickSound() {
   filt.frequency.value = 600;
   src.connect(filt);
   filt.connect(gain);
-  gain.connect(audioCtx.destination);
+  routeGain(gain);
   gain.gain.value = 0.06;
   src.start();
 }
 
 function playWinner() {
   ensureAudio();
-  // Rising arpeggio then held note
   const melody = [392, 523, 659, 784, 1047];
   melody.forEach((f, i) => tone(f, i < 4 ? 0.1 : 0.4, 0.3, 'square', i * 0.09));
 }
 
-// ─── GRID CONFIG ───────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// RECORDING  — canvas + audio → downloadable .webm
+// ═══════════════════════════════════════════════════════════════════════════
+let mediaRecorder = null;
+let recordedChunks = [];
+let isRecording = false;
+
+function startRecording() {
+  ensureAudio();
+  audioDest = audioCtx.createMediaStreamDestination();
+
+  const canvasStream = canvas.captureStream(30);
+  const combined = new MediaStream([
+    ...canvasStream.getVideoTracks(),
+    ...audioDest.stream.getAudioTracks(),
+  ]);
+
+  const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+    ? 'video/webm;codecs=vp9' : 'video/webm';
+  mediaRecorder = new MediaRecorder(combined, { mimeType: mime });
+  recordedChunks = [];
+
+  mediaRecorder.ondataavailable = e => {
+    if (e.data.size > 0) recordedChunks.push(e.data);
+  };
+
+  mediaRecorder.onstop = () => {
+    const blob = new Blob(recordedChunks, { type: 'video/webm' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `territory-war-${Date.now()}.webm`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    audioDest = null;
+  };
+
+  mediaRecorder.start(200); // collect in 200ms chunks
+  isRecording = true;
+  updateRecBtn();
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop();
+  }
+  isRecording = false;
+  updateRecBtn();
+}
+
+function updateRecBtn() {
+  const btn = document.getElementById('rec-btn');
+  btn.textContent  = isRecording ? '⏹ Stop' : '⏺ Rec';
+  btn.classList.toggle('recording', isRecording);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GRID CONFIG
+// ═══════════════════════════════════════════════════════════════════════════
 const GRID   = 71;
 const CTR    = 35;
 const RADIUS = 33;
 const SZ     = Math.min(window.innerWidth - 28, 500);
 const CELL   = SZ / GRID;
 
-// Fixed quadrant anchors — shuffled each round so bots get different positions
 const QUADRANT_STARTS = [
   [CTR - 21, CTR - 21],
   [CTR - 21, CTR + 21],
   [CTR + 21, CTR + 21],
   [CTR + 21, CTR - 21],
 ];
-
 let STARTS = [...QUADRANT_STARTS];
 
 const DIRS4 = [[-1,0],[1,0],[0,-1],[0,1]];
 
-// ─── SPEED STATE ──────────────────────────────────────────────────────────
+// ── SPEED STATE ──
 let tickMs       = 40;
 let cellsPerTick = 6;
 
-// ─── BOT DEFINITIONS ──────────────────────────────────────────────────────
+// ── BOT DEFINITIONS ──
 const BOT_COLORS = [
   { color:'#F87171', light:'#fca5a5' },
   { color:'#38BDF8', light:'#7dd3fc' },
@@ -266,32 +362,33 @@ const BOT_COLORS = [
   { color:'#4ADE80', light:'#86efac' },
 ];
 
-// All available strategies — assign one index per bot
 const STRATEGIES = [
-  { name:'Greedy',      desc:'Most open space'      },
-  { name:'Aggressive',  desc:'Targets enemy borders' },
-  { name:'Random',      desc:'Pure chaos'            },
-  { name:'Spiral',      desc:'Clockwise sweep'       },
-  { name:'Wall Hugger', desc:'Hugs the arena edge'   },
-  { name:'Blob',        desc:'Compact circle'        },
-  { name:'Sniper',      desc:'Aims at enemies'       },
-  { name:'Coward',      desc:'Runs from enemies'     },
+  { name:'Greedy',      desc:'Most open space'       },
+  { name:'Aggressive',  desc:'Targets enemy borders'  },
+  { name:'Random',      desc:'Pure chaos'             },
+  { name:'Spiral',      desc:'Clockwise sweep'        },
+  { name:'Wall Hugger', desc:'Hugs the arena edge'    },
+  { name:'Blob',        desc:'Compact circle'         },
+  { name:'Sniper',      desc:'Aims at enemies'        },
+  { name:'Coward',      desc:'Runs from enemies'      },
 ];
 
-// Per-bot config that persists across rounds (user can change strategy)
-const botConfigs = [0, 1, 2, 3].map((i) => ({
-  id:       i + 1,
-  stratIdx: i,            // default: each bot gets a unique starting strategy
-  ...BOT_COLORS[i],
+const botConfigs = [0,1,2,3].map(i => ({
+  id: i + 1, stratIdx: i, ...BOT_COLORS[i],
 }));
 
-// ─── CANVAS ───────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// CANVAS
+// ═══════════════════════════════════════════════════════════════════════════
 const canvas = document.getElementById('canvas');
 canvas.width = canvas.height = SZ;
 const ctx = canvas.getContext('2d');
 
-// ─── GAME STATE ───────────────────────────────────────────────────────────
-let grid, bots, totalCells, tickN, gameOver, timer;
+// ═══════════════════════════════════════════════════════════════════════════
+// GAME STATE
+// ═══════════════════════════════════════════════════════════════════════════
+let grid, bots, totalCells, tickN, gameOver, timer, countdownTimer;
+let running = false;  // true while countdown or game loop is active
 const flash = new Map();
 
 function K(r, c) { return r * GRID + c; }
@@ -322,9 +419,10 @@ function allNeighbors(r, c) {
   return out;
 }
 
-// ─── INIT ─────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════════════════════════
 function randomizeRound() {
-  // Shuffle starting quadrants so bots begin from different positions each round
   STARTS = [...QUADRANT_STARTS];
   for (let i = STARTS.length - 1; i > 0; i--) {
     const j = (Math.random() * (i + 1)) | 0;
@@ -333,12 +431,12 @@ function randomizeRound() {
 }
 
 function shuffleAllStrategies() {
-  const indices = STRATEGIES.map((_, i) => i);
-  for (let i = indices.length - 1; i > 0; i--) {
+  const idx = STRATEGIES.map((_, i) => i);
+  for (let i = idx.length - 1; i > 0; i--) {
     const j = (Math.random() * (i + 1)) | 0;
-    [indices[i], indices[j]] = [indices[j], indices[i]];
+    [idx[i], idx[j]] = [idx[j], idx[i]];
   }
-  botConfigs.forEach((cfg, i) => { cfg.stratIdx = indices[i]; });
+  botConfigs.forEach((cfg, i) => { cfg.stratIdx = idx[i]; });
 }
 
 function initGame() {
@@ -361,23 +459,21 @@ function initGame() {
         }
       }
     return {
-      id:       cfg.id,
-      color:    cfg.color,
-      light:    cfg.light,
-      stratIdx: cfg.stratIdx,
-      frontier,
-      startR:   sr,
-      startC:   sc,
-      angle:    Math.atan2(sr - CTR, sc - CTR),
+      id: cfg.id, color: cfg.color, light: cfg.light,
+      stratIdx: cfg.stratIdx, frontier,
+      startR: sr, startC: sc,
+      angle: Math.atan2(sr - CTR, sc - CTR),
     };
   });
 
-  tickN    = 0;
+  tickN = 0;
   gameOver = false;
   flash.clear();
 }
 
-// ─── HELPERS ──────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════════════════
 function getCandidates(bot) {
   const result = new Set();
   for (const k of bot.frontier)
@@ -394,7 +490,6 @@ function shuffle(arr) {
   return arr;
 }
 
-// ─── ENEMY CENTROID (shared computation per tick) ─────────────────────────
 function enemyCentroid(botId) {
   let ex = 0, ey = 0, n = 0;
   for (let i = 0; i < grid.length; i++) {
@@ -403,9 +498,9 @@ function enemyCentroid(botId) {
   return n > 0 ? [ey / n, ex / n] : null;
 }
 
-// ─── STRATEGIES ───────────────────────────────────────────────────────────
-const N = cellsPerTick; // alias; strategies use the live variable below
-
+// ═══════════════════════════════════════════════════════════════════════════
+// STRATEGIES
+// ═══════════════════════════════════════════════════════════════════════════
 function expand_greedy(bot) {
   const c = getCandidates(bot);
   c.sort((a, b) => emptyNeighbors(R(b), C(b)).length - emptyNeighbors(R(a), C(a)).length);
@@ -433,29 +528,22 @@ function expand_spiral(bot) {
     const ab = ((Math.atan2(R(b) - CTR, C(b) - CTR) - bot.angle + 4 * Math.PI) % (2 * Math.PI));
     return aa - ab;
   });
-  if (c.length > 0)
-    bot.angle = Math.atan2(R(c[0]) - CTR, C(c[0]) - CTR) + 0.09;
+  if (c.length > 0) bot.angle = Math.atan2(R(c[0]) - CTR, C(c[0]) - CTR) + 0.09;
   return c.slice(0, cellsPerTick);
 }
 
 function expand_wallhugger(bot) {
   const c = getCandidates(bot);
-  // Prefer cells farthest from center (closest to arena edge)
   c.sort((a, b) => {
-    const da = (R(a) - CTR) ** 2 + (C(a) - CTR) ** 2;
-    const db = (R(b) - CTR) ** 2 + (C(b) - CTR) ** 2;
-    return db - da;
+    return ((R(b)-CTR)**2+(C(b)-CTR)**2) - ((R(a)-CTR)**2+(C(a)-CTR)**2);
   });
   return c.slice(0, cellsPerTick);
 }
 
 function expand_blob(bot) {
   const c = getCandidates(bot);
-  // Prefer cells closest to own start — makes a compact circular blob
   c.sort((a, b) => {
-    const da = (R(a) - bot.startR) ** 2 + (C(a) - bot.startC) ** 2;
-    const db = (R(b) - bot.startR) ** 2 + (C(b) - bot.startC) ** 2;
-    return da - db;
+    return ((R(a)-bot.startR)**2+(C(a)-bot.startC)**2) - ((R(b)-bot.startR)**2+(C(b)-bot.startC)**2);
   });
   return c.slice(0, cellsPerTick);
 }
@@ -465,11 +553,7 @@ function expand_sniper(bot) {
   const ec = enemyCentroid(bot.id);
   if (!ec) return shuffle(c).slice(0, cellsPerTick);
   const [ey, ex] = ec;
-  c.sort((a, b) => {
-    const da = (R(a) - ey) ** 2 + (C(a) - ex) ** 2;
-    const db = (R(b) - ey) ** 2 + (C(b) - ex) ** 2;
-    return da - db; // closer to enemy cluster first
-  });
+  c.sort((a, b) => ((R(a)-ey)**2+(C(a)-ex)**2) - ((R(b)-ey)**2+(C(b)-ex)**2));
   return c.slice(0, cellsPerTick);
 }
 
@@ -478,26 +562,18 @@ function expand_coward(bot) {
   const ec = enemyCentroid(bot.id);
   if (!ec) return shuffle(c).slice(0, cellsPerTick);
   const [ey, ex] = ec;
-  c.sort((a, b) => {
-    const da = (R(a) - ey) ** 2 + (C(a) - ex) ** 2;
-    const db = (R(b) - ey) ** 2 + (C(b) - ex) ** 2;
-    return db - da; // farther from enemy cluster first
-  });
+  c.sort((a, b) => ((R(b)-ey)**2+(C(b)-ex)**2) - ((R(a)-ey)**2+(C(a)-ex)**2));
   return c.slice(0, cellsPerTick);
 }
 
 const STRATEGY_FNS = [
-  expand_greedy,
-  expand_aggressive,
-  expand_random,
-  expand_spiral,
-  expand_wallhugger,
-  expand_blob,
-  expand_sniper,
-  expand_coward,
+  expand_greedy, expand_aggressive, expand_random, expand_spiral,
+  expand_wallhugger, expand_blob, expand_sniper, expand_coward,
 ];
 
-// ─── TICK ─────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// TICK
+// ═══════════════════════════════════════════════════════════════════════════
 function claim(bot, k) {
   if (grid[k] !== 0) return;
   grid[k] = bot.id;
@@ -517,7 +593,7 @@ function tick() {
 
   for (let i = 0; i < bots.length; i++) {
     const bot = bots[i];
-    bot.stratIdx = botConfigs[i].stratIdx; // pick up live changes
+    bot.stratIdx = botConfigs[i].stratIdx;
     for (const k of STRATEGY_FNS[bot.stratIdx](bot)) claim(bot, k);
     if (tickN % 12 === i) pruneFrontier(bot);
   }
@@ -533,8 +609,10 @@ function tick() {
   updateUI();
 }
 
-// ─── RENDER ───────────────────────────────────────────────────────────────
-const COLOR_MAP = ['', ...BOT_COLORS.map(b => b.color)];
+// ═══════════════════════════════════════════════════════════════════════════
+// RENDER
+// ═══════════════════════════════════════════════════════════════════════════
+const COLOR_MAP   = ['', ...BOT_COLORS.map(b => b.color)];
 const EMPTY_COLOR = 'rgba(255,255,255,0.07)';
 const PAD  = 0.7;
 const FSIZ = CELL - PAD * 2;
@@ -557,7 +635,9 @@ function render() {
   ctx.restore();
 }
 
-// ─── SCOREBOARD ───────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// SCOREBOARD
+// ═══════════════════════════════════════════════════════════════════════════
 const stratOptions = STRATEGIES.map((s, i) => `<option value="${i}">${s.name}</option>`).join('');
 
 function buildUI() {
@@ -570,7 +650,6 @@ function buildUI() {
       <span class="bpct" id="pct${cfg.id}">0%</span>
     </div>`).join('');
 
-  // Set current values and wire change events
   botConfigs.forEach(cfg => {
     const sel = document.getElementById(`sel${cfg.id}`);
     sel.value = cfg.stratIdx;
@@ -588,7 +667,7 @@ function buildUI() {
 }
 
 function updateUI() {
-  const counts = [0, 0, 0, 0, 0];
+  const counts = [0,0,0,0,0];
   for (let i = 0; i < grid.length; i++) { const v = grid[i]; if (v > 0) counts[v]++; }
   let leadId = 1;
   for (let i = 2; i <= 4; i++) if (counts[i] > counts[leadId]) leadId = i;
@@ -601,15 +680,35 @@ function updateUI() {
   }
 }
 
-// ─── SPEED CONTROL ────────────────────────────────────────────────────────
-document.querySelectorAll('.spd-btn').forEach(btn => {
+function syncDropdowns() {
+  botConfigs.forEach(cfg => {
+    const sel = document.getElementById(`sel${cfg.id}`);
+    if (sel) {
+      sel.value = cfg.stratIdx;
+      document.getElementById(`bdesc${cfg.id}`).textContent = STRATEGIES[cfg.stratIdx].desc;
+    }
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BUTTON HANDLERS
+// ═══════════════════════════════════════════════════════════════════════════
+const startBtn = document.getElementById('start-btn');
+
+function setStartEnabled(enabled) {
+  startBtn.disabled = !enabled;
+  startBtn.textContent = enabled ? '▶ Start' : '● Running';
+}
+
+// Speed buttons
+document.querySelectorAll('.speed-group .btn').forEach(btn => {
   btn.addEventListener('click', () => {
     ensureAudio();
-    document.querySelectorAll('.spd-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.speed-group .btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     tickMs       = +btn.dataset.ms;
     cellsPerTick = +btn.dataset.spd;
-    if (!gameOver) {
+    if (running && !gameOver) {
       clearInterval(timer);
       timer = setInterval(tick, tickMs);
     }
@@ -617,19 +716,22 @@ document.querySelectorAll('.spd-btn').forEach(btn => {
   });
 });
 
-document.getElementById('restart-btn').addEventListener('click', () => {
+// Start
+startBtn.addEventListener('click', () => {
   ensureAudio();
-  clearTimeout(restartTimeout);
   startGame();
 });
 
+// Shuffle
 document.getElementById('shuffle-btn').addEventListener('click', () => {
   ensureAudio();
   shuffleAllStrategies();
-  clearTimeout(restartTimeout);
-  startGame();
+  resetBoard();
+  syncDropdowns();
+  tone(880, 0.08, 0.15, 'sine');
 });
 
+// Sound toggle
 document.getElementById('sound-btn').addEventListener('click', () => {
   ensureAudio();
   soundOn = !soundOn;
@@ -639,33 +741,60 @@ document.getElementById('sound-btn').addEventListener('click', () => {
   if (soundOn) tone(660, 0.1, 0.2, 'sine');
 });
 
-// ─── GAME END ─────────────────────────────────────────────────────────────
-let restartTimeout;
+// Record
+document.getElementById('rec-btn').addEventListener('click', () => {
+  ensureAudio();
+  if (isRecording) {
+    stopRecording();
+  } else {
+    startRecording();
+  }
+});
 
+// ═══════════════════════════════════════════════════════════════════════════
+// GAME END
+// ═══════════════════════════════════════════════════════════════════════════
 function endGame() {
   gameOver = true;
+  running  = false;
   clearInterval(timer);
   render();
   updateUI();
 
-  const counts = [0, 0, 0, 0, 0];
+  const counts = [0,0,0,0,0];
   for (let i = 0; i < grid.length; i++) { const v = grid[i]; if (v > 0) counts[v]++; }
   let winId = 1;
   for (let i = 2; i <= 4; i++) if (counts[i] > counts[winId]) winId = i;
 
-  const wCfg = botConfigs[winId - 1];
-  const pct  = Math.round(counts[winId] / totalCells * 100);
+  const wCfg   = botConfigs[winId - 1];
+  const pct    = Math.round(counts[winId] / totalCells * 100);
   const wStrat = STRATEGIES[wCfg.stratIdx];
   document.getElementById('msg').textContent = `${wStrat.name} wins — ${pct}% claimed!`;
   playWinner();
-
-  restartTimeout = setTimeout(startGame, 4200);
+  setStartEnabled(true);
 }
 
-// ─── START ────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// START / RESET
+// ═══════════════════════════════════════════════════════════════════════════
+function resetBoard() {
+  clearInterval(timer);
+  clearInterval(countdownTimer);
+  running = false;
+  gameOver = false;
+  initGame();
+  buildUI();
+  render();
+  updateUI();
+  document.getElementById('msg').textContent = 'Pick strategies & press Start';
+  setStartEnabled(true);
+}
+
 function startGame() {
   clearInterval(timer);
-  clearTimeout(restartTimeout);
+  clearInterval(countdownTimer);
+  running = true;
+  setStartEnabled(false);
   initGame();
   buildUI();
   render();
@@ -674,9 +803,9 @@ function startGame() {
   const msgEl = document.getElementById('msg');
   let count = 3;
   msgEl.textContent = count;
-
   playCountdown(count);
-  const cd = setInterval(() => {
+
+  countdownTimer = setInterval(() => {
     count--;
     if (count > 0) {
       msgEl.textContent = count;
@@ -684,7 +813,7 @@ function startGame() {
     } else {
       msgEl.textContent = 'GO!';
       playGo();
-      clearInterval(cd);
+      clearInterval(countdownTimer);
       setTimeout(() => {
         msgEl.textContent = '';
         timer = setInterval(tick, tickMs);
@@ -693,7 +822,14 @@ function startGame() {
   }, 700);
 }
 
-startGame();
+// ═══════════════════════════════════════════════════════════════════════════
+// BOOT — show idle board, wait for user to press Start
+// ═══════════════════════════════════════════════════════════════════════════
+initGame();
+buildUI();
+render();
+updateUI();
+setStartEnabled(true);
 </script>
 </body>
 </html>
