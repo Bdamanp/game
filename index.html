@@ -363,7 +363,7 @@ const BOT_COLORS = [
 ];
 
 const STRATEGIES = [
-  { name:'Greedy',      desc:'Most open space'       },
+  { name:'Greedy',      desc:'Rushes the center'       },
   { name:'Aggressive',  desc:'Targets enemy borders'  },
   { name:'Random',      desc:'Pure chaos'             },
   { name:'Spiral',      desc:'Clockwise sweep'        },
@@ -503,7 +503,12 @@ function enemyCentroid(botId) {
 // ═══════════════════════════════════════════════════════════════════════════
 function expand_greedy(bot) {
   const c = getCandidates(bot);
-  c.sort((a, b) => emptyNeighbors(R(b), C(b)).length - emptyNeighbors(R(a), C(a)).length);
+  // Rush toward center of arena (strategic position, but not a snowball)
+  c.sort((a, b) => {
+    const da = (R(a) - CTR) ** 2 + (C(a) - CTR) ** 2;
+    const db = (R(b) - CTR) ** 2 + (C(b) - CTR) ** 2;
+    return da - db + (Math.random() - 0.5) * 8; // add noise for variety
+  });
   return c.slice(0, cellsPerTick);
 }
 
@@ -586,17 +591,67 @@ function pruneFrontier(bot) {
     if (emptyNeighbors(R(k), C(k)).length === 0) bot.frontier.delete(k);
 }
 
+// Territory stealing: weakly-held border cells get captured by surrounding enemies
+function resolveConflicts() {
+  const steals = [];
+
+  for (let r = 0; r < GRID; r++) {
+    for (let c = 0; c < GRID; c++) {
+      const v = grid[K(r, c)];
+      if (v <= 0) continue;
+
+      const nbrs = allNeighbors(r, c);
+      let friendly = 0;
+      const enemyCounts = {};
+
+      for (const nk of nbrs) {
+        const nv = grid[nk];
+        if (nv === v) friendly++;
+        else if (nv > 0) enemyCounts[nv] = (enemyCounts[nv] || 0) + 1;
+      }
+
+      // Vulnerable: ≤1 friendly neighbor and 3+ from one enemy
+      if (friendly <= 1) {
+        for (const eid in enemyCounts) {
+          if (enemyCounts[eid] >= 3) {
+            steals.push([K(r, c), +eid]);
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  for (const [k, newOwner] of steals) {
+    const oldId = grid[k];
+    grid[k] = newOwner;
+    // Move from old frontier to new
+    if (bots[oldId - 1]) bots[oldId - 1].frontier.delete(k);
+    if (bots[newOwner - 1]) {
+      bots[newOwner - 1].frontier.add(k);
+      flash.set(k, bots[newOwner - 1].light);
+    }
+  }
+}
+
 function tick() {
   if (gameOver) return;
   tickN++;
   flash.clear();
 
-  for (let i = 0; i < bots.length; i++) {
+  // Shuffle turn order each tick — no first-mover advantage
+  const order = [0, 1, 2, 3];
+  shuffle(order);
+
+  for (const i of order) {
     const bot = bots[i];
     bot.stratIdx = botConfigs[i].stratIdx;
     for (const k of STRATEGY_FNS[bot.stratIdx](bot)) claim(bot, k);
     if (tickN % 12 === i) pruneFrontier(bot);
   }
+
+  // Border conflict: steal weakly-held cells every 3 ticks
+  if (tickN % 3 === 0) resolveConflicts();
 
   let empty = 0;
   for (let i = 0; i < grid.length; i++) if (grid[i] === 0) empty++;
