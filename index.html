@@ -159,10 +159,13 @@ h1 {
   100% { background: rgba(255,255,255,0.035); }
 }
 .dot { width:11px; height:11px; border-radius:50%; flex-shrink:0; }
+.bot-name { font-size:.82rem; font-weight:800; width:42px; flex-shrink:0; }
 .bdesc { font-size:.68rem; color:#4b5563; flex:1; transition: color .2s; }
 .bar { width:80px; height:5px; background:rgba(255,255,255,0.08); border-radius:3px; overflow:hidden; flex-shrink:0; }
 .bar-fill { height:100%; border-radius:3px; width:0%; transition: width .45s ease; }
 .bpct { font-size:.82rem; font-weight:700; width:36px; text-align:right; color:#e2e8f0; }
+.row.trapped { opacity: 0.45; }
+.row.trapped .bpct { color: #ef4444 !important; }
 .strat-select {
   background: rgba(255,255,255,0.07);
   border: 1px solid rgba(255,255,255,0.12);
@@ -342,7 +345,9 @@ function renderRecFrame() {
     for (let col = 0; col < GRID; col++) {
       const v = grid[K(row, col)];
       if (v === -1) continue;
-      r.fillStyle = v === 0 ? 'rgba(255,255,255,0.07)' : (flash.get(K(row, col)) || COLOR_MAP[v]);
+      const isTrappedCell = v > 0 && bots && bots[v - 1] && bots[v - 1].trapped;
+      r.fillStyle = v === 0 ? 'rgba(255,255,255,0.07)'
+        : (flash.get(K(row, col)) || (isTrappedCell ? DARK_MAP[v] : COLOR_MAP[v]));
       r.fillRect(aLeft + col * cSz + cPad, aTop + row * cSz + cPad, cSz - cPad * 2, cSz - cPad * 2);
     }
   }
@@ -368,35 +373,55 @@ function renderRecFrame() {
   const counts = [0, 0, 0, 0, 0];
   for (let i = 0; i < grid.length; i++) { const v = grid[i]; if (v > 0) counts[v]++; }
 
-  botConfigs.forEach((cfg, idx) => {
-    const y   = RL.scoreY + idx * RL.rowH;
-    const h   = RL.rowH - 8;
-    const mid = y + h / 2;
-    const strat = STRATEGIES[cfg.stratIdx];
-    const pct = totalCells > 0 ? Math.round(counts[cfg.id] / totalCells * 100) : 0;
+  // Compute leader
+  let recLeadId = 1;
+  for (let i = 2; i <= 4; i++) if (counts[i] > counts[recLeadId]) recLeadId = i;
+  const recLeadBot = bots && bots[recLeadId - 1];
+  if (recLeadBot && recLeadBot.trapped) recLeadId = -1;
 
-    // Row bg
-    r.fillStyle = 'rgba(255,255,255,0.04)';
+  botConfigs.forEach((cfg, idx) => {
+    const y      = RL.scoreY + idx * RL.rowH;
+    const h      = RL.rowH - 8;
+    const mid    = y + h / 2;
+    const strat  = STRATEGIES[cfg.stratIdx];
+    const pct    = totalCells > 0 ? Math.round(counts[cfg.id] / totalCells * 100) : 0;
+    const bot    = bots && bots[cfg.id - 1];
+    const trapped = bot && bot.trapped;
+    const isLead = cfg.id === recLeadId;
+
+    // Row bg — glow for leader
+    if (isLead) {
+      r.shadowColor = cfg.color;
+      r.shadowBlur  = 18;
+    }
+    r.fillStyle = isLead ? `${cfg.color}22` : 'rgba(255,255,255,0.04)';
     rrect(r, RL.scoreX, y, RL.scoreW, h, 10);
     r.fill();
+    if (isLead) {
+      r.strokeStyle = `${cfg.color}88`;
+      r.lineWidth   = 1.5;
+      r.stroke();
+      r.shadowBlur = 0;
+    }
+    r.shadowBlur = 0;
 
     // Color dot
     r.beginPath();
     r.arc(RL.scoreX + 20, mid, 7, 0, Math.PI * 2);
-    r.fillStyle = cfg.color;
+    r.fillStyle = trapped ? '#374151' : cfg.color;
     r.fill();
 
-    // Strategy name
-    r.textAlign = 'left';
+    // Bot name (prominent, colored)
+    r.textAlign    = 'left';
     r.textBaseline = 'middle';
-    r.fillStyle = '#e2e8f0';
-    r.font = `700 16px ${RL.font}`;
-    r.fillText(strat.name, RL.scoreX + 38, mid);
+    r.fillStyle    = trapped ? '#374151' : cfg.color;
+    r.font         = `800 16px ${RL.font}`;
+    r.fillText(cfg.name, RL.scoreX + 36, mid);
 
-    // Description
-    r.fillStyle = '#4b5563';
-    r.font = `400 13px ${RL.font}`;
-    r.fillText(strat.desc, RL.scoreX + 170, mid);
+    // Strategy name (gray)
+    r.fillStyle = trapped ? '#374151' : '#6b7280';
+    r.font      = `400 13px ${RL.font}`;
+    r.fillText(strat.name, RL.scoreX + 105, mid);
 
     // Bar bg
     const barX = RL.scoreX + 430;
@@ -407,18 +432,23 @@ function renderRecFrame() {
     rrect(r, barX, barY, barW, barH, 3);
     r.fill();
 
-    // Bar fill
-    if (pct > 0) {
+    if (!trapped && pct > 0) {
       r.fillStyle = cfg.color;
       rrect(r, barX, barY, Math.max(barW * pct / 100, 4), barH, 3);
       r.fill();
     }
 
-    // Percentage
+    // Right-side label
     r.textAlign = 'right';
-    r.fillStyle = '#e2e8f0';
-    r.font = `700 16px ${RL.font}`;
-    r.fillText(pct + '%', RL.scoreX + RL.scoreW - 14, mid);
+    if (trapped) {
+      r.fillStyle = '#ef4444';
+      r.font      = `700 14px ${RL.font}`;
+      r.fillText('TRAPPED', RL.scoreX + RL.scoreW - 14, mid);
+    } else {
+      r.fillStyle = isLead ? cfg.color : '#e2e8f0';
+      r.font      = `${isLead ? '800' : '700'} ${isLead ? 18 : 16}px ${RL.font}`;
+      r.fillText((isLead ? '▲ ' : '') + pct + '%', RL.scoreX + RL.scoreW - 14, mid);
+    }
   });
 }
 
@@ -532,8 +562,10 @@ const STRATEGIES = [
   { name:'Coward',      desc:'Runs from enemies'      },
 ];
 
+const BOT_NAMES = ['Blaze', 'Frost', 'Storm', 'Venom'];
+
 const botConfigs = [0,1,2,3].map(i => ({
-  id: i + 1, stratIdx: i, ...BOT_COLORS[i],
+  id: i + 1, name: BOT_NAMES[i], stratIdx: i, ...BOT_COLORS[i],
 }));
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -622,6 +654,7 @@ function initGame() {
       stratIdx: cfg.stratIdx, frontier,
       startR: sr, startC: sc,
       angle: Math.atan2(sr - CTR, sc - CTR),
+      trapped: false, trapCount: 0,
     };
   });
 
@@ -769,10 +802,13 @@ function resolveConflicts() {
         else if (nv > 0) enemyCounts[nv] = (enemyCounts[nv] || 0) + 1;
       }
 
-      // Vulnerable: ≤1 friendly neighbor and 3+ from one enemy
+      // Trapped bots are easier to eat (threshold drops to 2)
+      const ownerTrapped = bots && bots[v - 1] && bots[v - 1].trapped;
+      const threshold = ownerTrapped ? 2 : 3;
+
       if (friendly <= 1) {
         for (const eid in enemyCounts) {
-          if (enemyCounts[eid] >= 3) {
+          if (enemyCounts[eid] >= threshold) {
             steals.push([K(r, c), +eid]);
             break;
           }
@@ -805,7 +841,20 @@ function tick() {
   for (const i of order) {
     const bot = bots[i];
     bot.stratIdx = botConfigs[i].stratIdx;
-    for (const k of STRATEGY_FNS[bot.stratIdx](bot)) claim(bot, k);
+
+    if (!bot.trapped) {
+      const cands = getCandidates(bot);
+      if (cands.length === 0) {
+        bot.trapCount++;
+        if (bot.trapCount >= 4) {
+          bot.trapped = true;
+          tone(220, 0.35, 0.2, 'sawtooth'); // trapped thud
+        }
+      } else {
+        bot.trapCount = 0;
+        for (const k of STRATEGY_FNS[bot.stratIdx](bot)) claim(bot, k);
+      }
+    }
     if (tickN % 12 === i) pruneFrontier(bot);
   }
 
@@ -814,9 +863,12 @@ function tick() {
 
   let empty = 0;
   for (let i = 0; i < grid.length; i++) if (grid[i] === 0) empty++;
-  const stuck = empty > 0 && bots.every(b => getCandidates(b).length === 0);
 
-  if (empty === 0 || tickN > 700 || stuck) { endGame(); return; }
+  const activeBots = bots.filter(b => !b.trapped);
+  const stuck = empty > 0 && activeBots.length > 0 && activeBots.every(b => getCandidates(b).length === 0);
+  const allDone = empty === 0 || activeBots.length === 0;
+
+  if (allDone || tickN > 700 || stuck) { endGame(); return; }
 
   playTickSound();
   render();
@@ -827,6 +879,13 @@ function tick() {
 // RENDER
 // ═══════════════════════════════════════════════════════════════════════════
 const COLOR_MAP   = ['', ...BOT_COLORS.map(b => b.color)];
+const DARK_MAP    = ['', ...BOT_COLORS.map(b => {
+  const n = parseInt(b.color.slice(1), 16);
+  const r = ((n >> 16) & 255) * 0.28 | 0;
+  const g = ((n >> 8)  & 255) * 0.28 | 0;
+  const bl = (n & 255)        * 0.28 | 0;
+  return `rgb(${r},${g},${bl})`;
+})];
 const EMPTY_COLOR = 'rgba(255,255,255,0.07)';
 const PAD  = 0.7;
 const FSIZ = CELL - PAD * 2;
@@ -842,7 +901,9 @@ function render() {
     for (let c = 0; c < GRID; c++) {
       const v = grid[K(r, c)];
       if (v === -1) continue;
-      ctx.fillStyle = v === 0 ? EMPTY_COLOR : (flash.get(K(r, c)) || COLOR_MAP[v]);
+      const isTrapped = v > 0 && bots && bots[v - 1] && bots[v - 1].trapped;
+      ctx.fillStyle = v === 0 ? EMPTY_COLOR
+        : (flash.get(K(r, c)) || (isTrapped ? DARK_MAP[v] : COLOR_MAP[v]));
       ctx.fillRect(c * CELL + PAD, r * CELL + PAD, FSIZ, FSIZ);
     }
   }
@@ -858,8 +919,8 @@ function buildUI() {
   document.getElementById('score').innerHTML = botConfigs.map(cfg => `
     <div class="row" id="row${cfg.id}">
       <div class="dot" style="background:${cfg.color}"></div>
+      <span class="bot-name" style="color:${cfg.color}">${cfg.name}</span>
       <select class="strat-select" id="sel${cfg.id}">${stratOptions}</select>
-      <span class="bdesc" id="bdesc${cfg.id}">${STRATEGIES[cfg.stratIdx].desc}</span>
       <div class="bar"><div class="bar-fill" id="bar${cfg.id}" style="background:${cfg.color}"></div></div>
       <span class="bpct" id="pct${cfg.id}">0%</span>
     </div>`).join('');
@@ -887,10 +948,26 @@ function updateUI() {
   for (let i = 2; i <= 4; i++) if (counts[i] > counts[leadId]) leadId = i;
 
   for (const cfg of botConfigs) {
-    const pct = totalCells > 0 ? Math.round(counts[cfg.id] / totalCells * 100) : 0;
-    document.getElementById(`pct${cfg.id}`).textContent = pct + '%';
-    document.getElementById(`bar${cfg.id}`).style.width  = pct + '%';
-    document.getElementById(`row${cfg.id}`).classList.toggle('leading', cfg.id === leadId);
+    const bot     = bots ? bots[cfg.id - 1] : null;
+    const trapped = bot && bot.trapped;
+    const pct     = totalCells > 0 ? Math.round(counts[cfg.id] / totalCells * 100) : 0;
+    const isLead  = cfg.id === leadId && !trapped;
+    const row     = document.getElementById(`row${cfg.id}`);
+
+    document.getElementById(`pct${cfg.id}`).textContent = trapped ? '✕' : pct + '%';
+    document.getElementById(`bar${cfg.id}`).style.width = pct + '%';
+
+    row.classList.toggle('leading', isLead);
+    row.classList.toggle('trapped', trapped);
+
+    // Colored glow on leader
+    if (isLead) {
+      row.style.borderColor = cfg.color + '88';
+      row.style.boxShadow   = `0 0 14px ${cfg.color}33, inset 0 0 0 1px ${cfg.color}44`;
+    } else {
+      row.style.borderColor = '';
+      row.style.boxShadow   = '';
+    }
   }
 }
 
