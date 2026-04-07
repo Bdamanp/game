@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+<title>Territory War</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  background: #0d1117;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  color: #fff;
+  padding: 16px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+h1 {
+  font-size: clamp(1.3rem, 6vw, 2rem);
+  font-weight: 900;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  background: linear-gradient(135deg, #f1f5f9, #94a3b8);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: 2px;
+}
+.sub {
+  font-size: clamp(0.62rem, 2.2vw, 0.78rem);
+  color: #374151;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin-bottom: 14px;
+}
+#canvas {
+  display: block;
+  border-radius: 50%;
+  box-shadow:
+    0 0 0 1px rgba(255,255,255,0.06),
+    0 0 80px rgba(0,0,0,0.6);
+}
+#msg {
+  height: 30px;
+  margin: 10px 0 8px;
+  font-size: clamp(0.9rem, 3.5vw, 1.15rem);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: #fbbf24;
+  text-align: center;
+}
+.score {
+  width: min(90vw, 440px);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255,255,255,0.035);
+  border-radius: 10px;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  transition: border-color 0.4s, background 0.4s;
+}
+.row.leading {
+  background: rgba(255,255,255,0.07);
+  border-color: rgba(255,255,255,0.1);
+}
+.dot { width:11px; height:11px; border-radius:50%; flex-shrink:0; }
+.bname { font-size:.82rem; font-weight:700; width:74px; color:#e2e8f0; }
+.bdesc { font-size:.68rem; color:#4b5563; flex:1; }
+.bar { width:90px; height:5px; background:rgba(255,255,255,0.08); border-radius:3px; overflow:hidden; flex-shrink:0; }
+.bar-fill { height:100%; border-radius:3px; width:0%; transition: width 0.45s ease; }
+.bpct { font-size:.82rem; font-weight:700; width:36px; text-align:right; color:#e2e8f0; }
+</style>
+</head>
+<body>
+
+<h1>Territory War</h1>
+<p class="sub">4 algorithms fight for space</p>
+<canvas id="canvas"></canvas>
+<div id="msg"></div>
+<div class="score" id="score"></div>
+
+<script>
+// ─── CONFIG ────────────────────────────────────────────────────────────────
+const GRID    = 71;
+const CTR     = 35;
+const RADIUS  = 33;
+const SZ      = Math.min(window.innerWidth - 28, 500);
+const CELL    = SZ / GRID;
+const SPEED   = 6;    // cells claimed per bot per tick
+const TICK_MS = 40;   // ms per tick
+
+const BOTS = [
+  { id:1, name:'Greedy',     desc:'Nearest empty cell',    color:'#F87171', light:'#fca5a5' },
+  { id:2, name:'Aggressive', desc:'Targets enemy borders', color:'#38BDF8', light:'#7dd3fc' },
+  { id:3, name:'Random',     desc:'Pure chaos',            color:'#C084FC', light:'#d8b4fe' },
+  { id:4, name:'Spiral',     desc:'Clockwise sweep',       color:'#4ADE80', light:'#86efac' },
+];
+
+// Starting positions: 4 quadrants inside the circle
+const STARTS = [
+  [CTR - 21, CTR - 21],
+  [CTR - 21, CTR + 21],
+  [CTR + 21, CTR + 21],
+  [CTR + 21, CTR - 21],
+];
+
+const DIRS4 = [[-1,0],[1,0],[0,-1],[0,1]];
+
+// ─── CANVAS ────────────────────────────────────────────────────────────────
+const canvas = document.getElementById('canvas');
+canvas.width = canvas.height = SZ;
+const ctx = canvas.getContext('2d');
+
+// ─── STATE ─────────────────────────────────────────────────────────────────
+let grid, bots, totalCells, tickN, gameOver, timer;
+const flash = new Map(); // cellKey → light color string
+
+function K(r, c) { return r * GRID + c; }
+function R(k)    { return (k / GRID) | 0; }
+function C(k)    { return k % GRID; }
+
+function inCircle(r, c) {
+  return (r - CTR) ** 2 + (c - CTR) ** 2 <= RADIUS ** 2;
+}
+
+function emptyNeighbors(r, c) {
+  const out = [];
+  for (const [dr, dc] of DIRS4) {
+    const nr = r + dr, nc = c + dc;
+    if (nr >= 0 && nr < GRID && nc >= 0 && nc < GRID && grid[K(nr, nc)] === 0)
+      out.push(K(nr, nc));
+  }
+  return out;
+}
+
+function allNeighbors(r, c) {
+  const out = [];
+  for (const [dr, dc] of DIRS4) {
+    const nr = r + dr, nc = c + dc;
+    if (nr >= 0 && nr < GRID && nc >= 0 && nc < GRID)
+      out.push(K(nr, nc));
+  }
+  return out;
+}
+
+// ─── INIT ──────────────────────────────────────────────────────────────────
+function initGame() {
+  grid = new Int8Array(GRID * GRID).fill(-1);
+  totalCells = 0;
+  for (let r = 0; r < GRID; r++)
+    for (let c = 0; c < GRID; c++)
+      if (inCircle(r, c)) { grid[K(r, c)] = 0; totalCells++; }
+
+  bots = BOTS.map((b, i) => {
+    const [sr, sc] = STARTS[i];
+    const frontier = new Set();
+    // Seed a 3×3 starting cluster
+    for (let dr = -1; dr <= 1; dr++)
+      for (let dc = -1; dc <= 1; dc++) {
+        const nr = sr + dr, nc = sc + dc;
+        if (inCircle(nr, nc)) {
+          grid[K(nr, nc)] = b.id;
+          frontier.add(K(nr, nc));
+        }
+      }
+    return {
+      ...b,
+      frontier,
+      startR: sr,
+      startC: sc,
+      angle: Math.atan2(sr - CTR, sc - CTR),
+    };
+  });
+
+  tickN = 0;
+  gameOver = false;
+  flash.clear();
+}
+
+// ─── CANDIDATE HELPERS ─────────────────────────────────────────────────────
+function getCandidates(bot) {
+  const result = new Set();
+  for (const k of bot.frontier) {
+    for (const nk of emptyNeighbors(R(k), C(k)))
+      result.add(nk);
+  }
+  return [...result];
+}
+
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = (Math.random() * (i + 1)) | 0;
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+// ─── STRATEGIES ────────────────────────────────────────────────────────────
+function expand_greedy(bot) {
+  const cands = getCandidates(bot);
+  // Prefer cells with the most empty neighbors (maximize frontier growth)
+  cands.sort((a, b) =>
+    emptyNeighbors(R(b), C(b)).length - emptyNeighbors(R(a), C(a)).length
+  );
+  return cands.slice(0, SPEED);
+}
+
+function expand_aggressive(bot) {
+  const cands = getCandidates(bot);
+  // Prefer cells adjacent to enemy territory — hunt borders
+  cands.sort((a, b) => {
+    const enemyA = allNeighbors(R(a), C(a)).filter(k => grid[k] > 0 && grid[k] !== bot.id).length;
+    const enemyB = allNeighbors(R(b), C(b)).filter(k => grid[k] > 0 && grid[k] !== bot.id).length;
+    if (enemyB !== enemyA) return enemyB - enemyA;
+    return Math.random() - 0.5;
+  });
+  return cands.slice(0, SPEED);
+}
+
+function expand_random(bot) {
+  return shuffle(getCandidates(bot)).slice(0, SPEED);
+}
+
+function expand_spiral(bot) {
+  const cands = getCandidates(bot);
+  // Sort by angular distance ahead of the current sweep angle (clockwise)
+  cands.sort((a, b) => {
+    const aa = ((Math.atan2(R(a) - CTR, C(a) - CTR) - bot.angle + 4 * Math.PI) % (2 * Math.PI));
+    const ab = ((Math.atan2(R(b) - CTR, C(b) - CTR) - bot.angle + 4 * Math.PI) % (2 * Math.PI));
+    return aa - ab;
+  });
+  // Advance sweep angle toward the next claimed cell
+  if (cands.length > 0) {
+    const next = cands[0];
+    bot.angle = Math.atan2(R(next) - CTR, C(next) - CTR) + 0.09;
+  }
+  return cands.slice(0, SPEED);
+}
+
+const STRATEGY_FNS = [expand_greedy, expand_aggressive, expand_random, expand_spiral];
+
+// ─── TICK ──────────────────────────────────────────────────────────────────
+function claim(bot, k) {
+  if (grid[k] !== 0) return;
+  grid[k] = bot.id;
+  bot.frontier.add(k);
+  flash.set(k, bot.light);
+}
+
+function pruneFrontier(bot) {
+  for (const k of [...bot.frontier]) {
+    if (emptyNeighbors(R(k), C(k)).length === 0)
+      bot.frontier.delete(k);
+  }
+}
+
+function tick() {
+  if (gameOver) return;
+  tickN++;
+  flash.clear();
+
+  for (let i = 0; i < bots.length; i++) {
+    const bot = bots[i];
+    for (const k of STRATEGY_FNS[i](bot)) claim(bot, k);
+    if (tickN % 12 === i) pruneFrontier(bot);
+  }
+
+  // End conditions
+  let empty = 0;
+  for (let i = 0; i < grid.length; i++) if (grid[i] === 0) empty++;
+
+  const stuck = empty > 0 && bots.every(b => getCandidates(b).length === 0);
+
+  if (empty === 0 || tickN > 700 || stuck) {
+    endGame();
+  }
+
+  render();
+  updateUI();
+}
+
+// ─── RENDER ────────────────────────────────────────────────────────────────
+const BOT_COLORS = ['', ...BOTS.map(b => b.color)];
+const EMPTY_COLOR = 'rgba(255,255,255,0.07)';
+const PAD = 0.7;
+const FSIZ = CELL - PAD * 2;
+
+function render() {
+  ctx.clearRect(0, 0, SZ, SZ);
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(SZ / 2, SZ / 2, SZ / 2, 0, Math.PI * 2);
+  ctx.clip();
+
+  for (let r = 0; r < GRID; r++) {
+    for (let c = 0; c < GRID; c++) {
+      const v = grid[K(r, c)];
+      if (v === -1) continue;
+
+      const x = c * CELL + PAD;
+      const y = r * CELL + PAD;
+
+      if (v === 0) {
+        ctx.fillStyle = EMPTY_COLOR;
+      } else {
+        const fl = flash.get(K(r, c));
+        ctx.fillStyle = fl || BOT_COLORS[v];
+      }
+      ctx.fillRect(x, y, FSIZ, FSIZ);
+    }
+  }
+
+  ctx.restore();
+}
+
+// ─── SCOREBOARD ────────────────────────────────────────────────────────────
+function buildUI() {
+  document.getElementById('score').innerHTML = BOTS.map(b => `
+    <div class="row" id="row${b.id}">
+      <div class="dot" style="background:${b.color}"></div>
+      <span class="bname">${b.name}</span>
+      <span class="bdesc">${b.desc}</span>
+      <div class="bar"><div class="bar-fill" id="bar${b.id}" style="background:${b.color}"></div></div>
+      <span class="bpct" id="pct${b.id}">0%</span>
+    </div>
+  `).join('');
+}
+
+function updateUI() {
+  const counts = [0, 0, 0, 0, 0];
+  for (let i = 0; i < grid.length; i++) {
+    const v = grid[i]; if (v > 0) counts[v]++;
+  }
+  let leadId = 1;
+  for (let i = 2; i <= 4; i++) if (counts[i] > counts[leadId]) leadId = i;
+
+  for (const b of BOTS) {
+    const pct = totalCells > 0 ? Math.round(counts[b.id] / totalCells * 100) : 0;
+    document.getElementById(`pct${b.id}`).textContent = pct + '%';
+    document.getElementById(`bar${b.id}`).style.width = pct + '%';
+    document.getElementById(`row${b.id}`).classList.toggle('leading', b.id === leadId);
+  }
+}
+
+// ─── GAME END ──────────────────────────────────────────────────────────────
+function endGame() {
+  gameOver = true;
+  clearInterval(timer);
+
+  const counts = [0, 0, 0, 0, 0];
+  for (let i = 0; i < grid.length; i++) {
+    const v = grid[i]; if (v > 0) counts[v]++;
+  }
+  let winId = 1;
+  for (let i = 2; i <= 4; i++) if (counts[i] > counts[winId]) winId = i;
+
+  const winner = BOTS[winId - 1];
+  const pct = Math.round(counts[winId] / totalCells * 100);
+  document.getElementById('msg').textContent = `${winner.name} wins — ${pct}% claimed!`;
+
+  setTimeout(startGame, 4200);
+}
+
+// ─── START ─────────────────────────────────────────────────────────────────
+function startGame() {
+  clearInterval(timer);
+  initGame();
+  render();
+  updateUI();
+
+  const msgEl = document.getElementById('msg');
+  let count = 3;
+  msgEl.textContent = count;
+
+  const cd = setInterval(() => {
+    count--;
+    if (count > 0) {
+      msgEl.textContent = count;
+    } else {
+      msgEl.textContent = 'GO!';
+      clearInterval(cd);
+      setTimeout(() => {
+        msgEl.textContent = '';
+        timer = setInterval(tick, TICK_MS);
+      }, 500);
+    }
+  }, 700);
+}
+
+buildUI();
+startGame();
+</script>
+</body>
+</html>
