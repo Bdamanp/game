@@ -274,19 +274,176 @@ function playWinner() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// RECORDING  — canvas + audio → downloadable .webm
+// RECORDING  — full UI composited onto 1080×1080 offscreen canvas → .webm
 // ═══════════════════════════════════════════════════════════════════════════
-let mediaRecorder = null;
+const REC_SZ  = 1080;
+const recCanvas = document.createElement('canvas');
+recCanvas.width = recCanvas.height = REC_SZ;
+const rctx = recCanvas.getContext('2d');
+
+// Layout for the recording frame
+const RL = {
+  bg:      '#0d1117',
+  titleY:  58,
+  subY:    90,
+  arenaCX: 540,
+  arenaCY: 435,
+  arenaR:  296,
+  msgY:    775,
+  scoreX:  165,
+  scoreW:  750,
+  scoreY:  810,
+  rowH:    48,
+  font:    '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+};
+
+function rrect(c, x, y, w, h, r) {
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.arcTo(x + w, y, x + w, y + h, r);
+  c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r);
+  c.arcTo(x, y, x + w, y, r);
+  c.closePath();
+}
+
+function renderRecFrame() {
+  const r = rctx;
+
+  // ── Background ──
+  r.fillStyle = RL.bg;
+  r.fillRect(0, 0, REC_SZ, REC_SZ);
+
+  // ── Title ──
+  r.textAlign = 'center';
+  r.textBaseline = 'middle';
+  r.fillStyle = '#e2e8f0';
+  r.font = `900 40px ${RL.font}`;
+  r.fillText('TERRITORY WAR', REC_SZ / 2, RL.titleY);
+
+  // ── Subtitle ──
+  r.fillStyle = '#4b5563';
+  r.font = `400 15px ${RL.font}`;
+  r.fillText('4 algorithms fight for space', REC_SZ / 2, RL.subY);
+
+  // ── Arena — re-render at recording resolution for crisp pixels ──
+  const aLeft = RL.arenaCX - RL.arenaR;
+  const aTop  = RL.arenaCY - RL.arenaR;
+  const aDiam = RL.arenaR * 2;
+  const cSz   = aDiam / GRID;
+  const cPad  = cSz * 0.1;
+
+  r.save();
+  r.beginPath();
+  r.arc(RL.arenaCX, RL.arenaCY, RL.arenaR, 0, Math.PI * 2);
+  r.clip();
+
+  for (let row = 0; row < GRID; row++) {
+    for (let col = 0; col < GRID; col++) {
+      const v = grid[K(row, col)];
+      if (v === -1) continue;
+      r.fillStyle = v === 0 ? 'rgba(255,255,255,0.07)' : (flash.get(K(row, col)) || COLOR_MAP[v]);
+      r.fillRect(aLeft + col * cSz + cPad, aTop + row * cSz + cPad, cSz - cPad * 2, cSz - cPad * 2);
+    }
+  }
+  r.restore();
+
+  // Arena ring shadow
+  r.beginPath();
+  r.arc(RL.arenaCX, RL.arenaCY, RL.arenaR + 1, 0, Math.PI * 2);
+  r.strokeStyle = 'rgba(255,255,255,0.06)';
+  r.lineWidth = 1;
+  r.stroke();
+
+  // ── Message (countdown / winner) ──
+  const msgText = document.getElementById('msg').textContent;
+  if (msgText) {
+    r.textAlign = 'center';
+    r.fillStyle = '#fbbf24';
+    r.font = `800 28px ${RL.font}`;
+    r.fillText(msgText, REC_SZ / 2, RL.msgY);
+  }
+
+  // ── Scoreboard ──
+  const counts = [0, 0, 0, 0, 0];
+  for (let i = 0; i < grid.length; i++) { const v = grid[i]; if (v > 0) counts[v]++; }
+
+  botConfigs.forEach((cfg, idx) => {
+    const y   = RL.scoreY + idx * RL.rowH;
+    const h   = RL.rowH - 8;
+    const mid = y + h / 2;
+    const strat = STRATEGIES[cfg.stratIdx];
+    const pct = totalCells > 0 ? Math.round(counts[cfg.id] / totalCells * 100) : 0;
+
+    // Row bg
+    r.fillStyle = 'rgba(255,255,255,0.04)';
+    rrect(r, RL.scoreX, y, RL.scoreW, h, 10);
+    r.fill();
+
+    // Color dot
+    r.beginPath();
+    r.arc(RL.scoreX + 20, mid, 7, 0, Math.PI * 2);
+    r.fillStyle = cfg.color;
+    r.fill();
+
+    // Strategy name
+    r.textAlign = 'left';
+    r.textBaseline = 'middle';
+    r.fillStyle = '#e2e8f0';
+    r.font = `700 16px ${RL.font}`;
+    r.fillText(strat.name, RL.scoreX + 38, mid);
+
+    // Description
+    r.fillStyle = '#4b5563';
+    r.font = `400 13px ${RL.font}`;
+    r.fillText(strat.desc, RL.scoreX + 170, mid);
+
+    // Bar bg
+    const barX = RL.scoreX + 430;
+    const barW = 200;
+    const barH = 7;
+    const barY = mid - barH / 2;
+    r.fillStyle = 'rgba(255,255,255,0.08)';
+    rrect(r, barX, barY, barW, barH, 3);
+    r.fill();
+
+    // Bar fill
+    if (pct > 0) {
+      r.fillStyle = cfg.color;
+      rrect(r, barX, barY, Math.max(barW * pct / 100, 4), barH, 3);
+      r.fill();
+    }
+
+    // Percentage
+    r.textAlign = 'right';
+    r.fillStyle = '#e2e8f0';
+    r.font = `700 16px ${RL.font}`;
+    r.fillText(pct + '%', RL.scoreX + RL.scoreW - 14, mid);
+  });
+}
+
+// ── MediaRecorder plumbing ──
+let mediaRecorder  = null;
 let recordedChunks = [];
-let isRecording = false;
+let isRecording    = false;
+let recRAF         = null;
+
+function recLoop() {
+  if (!isRecording) return;
+  renderRecFrame();
+  recRAF = requestAnimationFrame(recLoop);
+}
 
 function startRecording() {
   ensureAudio();
   audioDest = audioCtx.createMediaStreamDestination();
 
-  const canvasStream = canvas.captureStream(30);
-  const combined = new MediaStream([
-    ...canvasStream.getVideoTracks(),
+  // First render so the stream has an initial frame
+  renderRecFrame();
+
+  const vidStream = recCanvas.captureStream(30);
+  const combined  = new MediaStream([
+    ...vidStream.getVideoTracks(),
     ...audioDest.stream.getAudioTracks(),
   ]);
 
@@ -312,16 +469,18 @@ function startRecording() {
     audioDest = null;
   };
 
-  mediaRecorder.start(200); // collect in 200ms chunks
+  mediaRecorder.start(200);
   isRecording = true;
+  recRAF = requestAnimationFrame(recLoop);
   updateRecBtn();
 }
 
 function stopRecording() {
+  isRecording = false;
+  cancelAnimationFrame(recRAF);
   if (mediaRecorder && mediaRecorder.state !== 'inactive') {
     mediaRecorder.stop();
   }
-  isRecording = false;
   updateRecBtn();
 }
 
