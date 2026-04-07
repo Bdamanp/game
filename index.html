@@ -132,7 +132,24 @@ h1 {
 .bar { width:80px; height:5px; background:rgba(255,255,255,0.08); border-radius:3px; overflow:hidden; flex-shrink:0; }
 .bar-fill { height:100%; border-radius:3px; width:0%; transition: width .45s ease; }
 .bpct { font-size:.82rem; font-weight:700; width:36px; text-align:right; color:#e2e8f0; }
-.cycle-hint { font-size:.6rem; color:#374151; flex-shrink:0; }
+.strat-select {
+  background: rgba(255,255,255,0.07);
+  border: 1px solid rgba(255,255,255,0.12);
+  color: #e2e8f0;
+  border-radius: 7px;
+  padding: 3px 6px;
+  font-size: .75rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+  width: 108px;
+  flex-shrink: 0;
+  transition: border-color .2s;
+}
+.strat-select:focus { border-color: rgba(255,255,255,0.3); }
+.strat-select option { background: #1f2937; color: #e2e8f0; }
+#sound-btn.muted { color: #ef4444; border-color: rgba(239,68,68,0.3); }
 </style>
 </head>
 <body>
@@ -151,11 +168,73 @@ h1 {
   </div>
   <button id="restart-btn">↺ Restart</button>
   <button id="shuffle-btn">⚄ Shuffle</button>
+  <button id="sound-btn">🔊</button>
 </div>
 
 <div class="score" id="score"></div>
 
 <script>
+// ─── SOUND SYSTEM ─────────────────────────────────────────────────────────
+let audioCtx = null;
+let soundOn  = true;
+
+function ensureAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+function tone(freq, dur, vol = 0.25, type = 'sine', delay = 0) {
+  if (!soundOn || !audioCtx) return;
+  const osc  = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.type = type;
+  osc.frequency.value = freq;
+  const t = audioCtx.currentTime + delay;
+  gain.gain.setValueAtTime(vol, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  osc.start(t);
+  osc.stop(t + dur + 0.01);
+}
+
+function playCountdown(n) {
+  ensureAudio();
+  const freqs = { 3: 330, 2: 392, 1: 523 };
+  tone(freqs[n] || 660, 0.12, 0.2, 'sine');
+}
+
+function playGo() {
+  ensureAudio();
+  [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.12, 0.25, 'square', i * 0.07));
+}
+
+function playTickSound() {
+  if (!soundOn || !audioCtx) return;
+  // Soft noise blip — pitched low so it doesn't fatigue
+  const buf  = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.025, audioCtx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+  const src  = audioCtx.createBufferSource();
+  const gain = audioCtx.createGain();
+  const filt = audioCtx.createBiquadFilter();
+  src.buffer = buf;
+  filt.type  = 'lowpass';
+  filt.frequency.value = 600;
+  src.connect(filt);
+  filt.connect(gain);
+  gain.connect(audioCtx.destination);
+  gain.gain.value = 0.06;
+  src.start();
+}
+
+function playWinner() {
+  ensureAudio();
+  // Rising arpeggio then held note
+  const melody = [392, 523, 659, 784, 1047];
+  melody.forEach((f, i) => tone(f, i < 4 ? 0.1 : 0.4, 0.3, 'square', i * 0.09));
+}
+
 // ─── GRID CONFIG ───────────────────────────────────────────────────────────
 const GRID   = 71;
 const CTR    = 35;
@@ -449,6 +528,7 @@ function tick() {
 
   if (empty === 0 || tickN > 700 || stuck) { endGame(); return; }
 
+  playTickSound();
   render();
   updateUI();
 }
@@ -478,35 +558,32 @@ function render() {
 }
 
 // ─── SCOREBOARD ───────────────────────────────────────────────────────────
+const stratOptions = STRATEGIES.map((s, i) => `<option value="${i}">${s.name}</option>`).join('');
+
 function buildUI() {
-  document.getElementById('score').innerHTML = botConfigs.map(cfg => {
-    const s = STRATEGIES[cfg.stratIdx];
-    return `
-    <div class="row" id="row${cfg.id}" data-bot="${cfg.id}">
+  document.getElementById('score').innerHTML = botConfigs.map(cfg => `
+    <div class="row" id="row${cfg.id}">
       <div class="dot" style="background:${cfg.color}"></div>
-      <span class="bname" id="bname${cfg.id}">${s.name}</span>
-      <span class="bdesc" id="bdesc${cfg.id}">${s.desc}</span>
+      <select class="strat-select" id="sel${cfg.id}">${stratOptions}</select>
+      <span class="bdesc" id="bdesc${cfg.id}">${STRATEGIES[cfg.stratIdx].desc}</span>
       <div class="bar"><div class="bar-fill" id="bar${cfg.id}" style="background:${cfg.color}"></div></div>
       <span class="bpct" id="pct${cfg.id}">0%</span>
-      <span class="cycle-hint">⟳</span>
-    </div>`;
-  }).join('');
+    </div>`).join('');
 
-  // Bot row click → cycle strategy
-  document.getElementById('score').addEventListener('click', e => {
-    const row = e.target.closest('.row[data-bot]');
-    if (!row) return;
-    const botId  = +row.dataset.bot;
-    const cfg    = botConfigs[botId - 1];
-    cfg.stratIdx = (cfg.stratIdx + 1) % STRATEGIES.length;
-    // Also update live bot if game is running
-    if (bots && !gameOver) bots[botId - 1].stratIdx = cfg.stratIdx;
-    const s = STRATEGIES[cfg.stratIdx];
-    document.getElementById(`bname${botId}`).textContent = s.name;
-    document.getElementById(`bdesc${botId}`).textContent = s.desc;
-    row.classList.remove('flash-row');
-    void row.offsetWidth; // reflow to re-trigger animation
-    row.classList.add('flash-row');
+  // Set current values and wire change events
+  botConfigs.forEach(cfg => {
+    const sel = document.getElementById(`sel${cfg.id}`);
+    sel.value = cfg.stratIdx;
+    sel.addEventListener('change', () => {
+      ensureAudio();
+      cfg.stratIdx = +sel.value;
+      if (bots && !gameOver) bots[cfg.id - 1].stratIdx = cfg.stratIdx;
+      document.getElementById(`bdesc${cfg.id}`).textContent = STRATEGIES[cfg.stratIdx].desc;
+      const row = document.getElementById(`row${cfg.id}`);
+      row.classList.remove('flash-row');
+      void row.offsetWidth;
+      row.classList.add('flash-row');
+    });
   });
 }
 
@@ -527,6 +604,7 @@ function updateUI() {
 // ─── SPEED CONTROL ────────────────────────────────────────────────────────
 document.querySelectorAll('.spd-btn').forEach(btn => {
   btn.addEventListener('click', () => {
+    ensureAudio();
     document.querySelectorAll('.spd-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     tickMs       = +btn.dataset.ms;
@@ -535,18 +613,30 @@ document.querySelectorAll('.spd-btn').forEach(btn => {
       clearInterval(timer);
       timer = setInterval(tick, tickMs);
     }
+    tone(660, 0.08, 0.15, 'sine');
   });
 });
 
 document.getElementById('restart-btn').addEventListener('click', () => {
+  ensureAudio();
   clearTimeout(restartTimeout);
   startGame();
 });
 
 document.getElementById('shuffle-btn').addEventListener('click', () => {
+  ensureAudio();
   shuffleAllStrategies();
   clearTimeout(restartTimeout);
   startGame();
+});
+
+document.getElementById('sound-btn').addEventListener('click', () => {
+  ensureAudio();
+  soundOn = !soundOn;
+  const btn = document.getElementById('sound-btn');
+  btn.textContent = soundOn ? '🔊' : '🔇';
+  btn.classList.toggle('muted', !soundOn);
+  if (soundOn) tone(660, 0.1, 0.2, 'sine');
 });
 
 // ─── GAME END ─────────────────────────────────────────────────────────────
@@ -567,6 +657,7 @@ function endGame() {
   const pct  = Math.round(counts[winId] / totalCells * 100);
   const wStrat = STRATEGIES[wCfg.stratIdx];
   document.getElementById('msg').textContent = `${wStrat.name} wins — ${pct}% claimed!`;
+  playWinner();
 
   restartTimeout = setTimeout(startGame, 4200);
 }
@@ -584,12 +675,15 @@ function startGame() {
   let count = 3;
   msgEl.textContent = count;
 
+  playCountdown(count);
   const cd = setInterval(() => {
     count--;
     if (count > 0) {
       msgEl.textContent = count;
+      playCountdown(count);
     } else {
       msgEl.textContent = 'GO!';
+      playGo();
       clearInterval(cd);
       setTimeout(() => {
         msgEl.textContent = '';
