@@ -674,21 +674,21 @@ function initGame() {
 
   bots = botConfigs.map((cfg, i) => {
     const [sr, sc] = STARTS[i];
-    const frontier = new Set();
+    // Place 3×3 starting cluster
     for (let dr = -1; dr <= 1; dr++)
       for (let dc = -1; dc <= 1; dc++) {
         const nr = sr + dr, nc = sc + dc;
-        if (inCircle(nr, nc)) {
-          grid[K(nr, nc)] = cfg.id;
-          frontier.add(K(nr, nc));
-        }
+        if (inCircle(nr, nc)) grid[K(nr, nc)] = cfg.id;
       }
+    // Head starts at the corner of the cluster facing the arena center
+    const hr = sr + Math.sign(CTR - sr);
+    const hc = sc + Math.sign(CTR - sc);
     return {
       id: cfg.id, color: cfg.color, light: cfg.light,
-      stratIdx: cfg.stratIdx, frontier,
+      stratIdx: cfg.stratIdx,
       startR: sr, startC: sc,
       angle: Math.atan2(sr - CTR, sc - CTR),
-      trapped: false, trapCount: 0, head: null,
+      trapped: false, trapCount: 0, head: K(hr, hc),
     };
   });
 
@@ -700,14 +700,6 @@ function initGame() {
 // ═══════════════════════════════════════════════════════════════════════════
 // HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
-function getCandidates(bot) {
-  const result = new Set();
-  for (const k of bot.frontier)
-    for (const nk of emptyNeighbors(R(k), C(k)))
-      result.add(nk);
-  return [...result];
-}
-
 function shuffle(arr) {
   for (let i = arr.length - 1; i > 0; i--) {
     const j = (Math.random() * (i + 1)) | 0;
@@ -725,90 +717,84 @@ function enemyCentroid(botId) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// STRATEGIES
+// STRATEGIES  — pick_*(bot, nbrs) → ONE cell key (single-step selectors)
+// nbrs is the list of empty 4-neighbors of the current head position
 // ═══════════════════════════════════════════════════════════════════════════
-function expand_greedy(bot) {
-  const c = getCandidates(bot);
-  // Rush toward center of arena (strategic position, but not a snowball)
-  c.sort((a, b) => {
-    const da = (R(a) - CTR) ** 2 + (C(a) - CTR) ** 2;
-    const db = (R(b) - CTR) ** 2 + (C(b) - CTR) ** 2;
-    return da - db + (Math.random() - 0.5) * 8; // add noise for variety
+function pick_greedy(bot, nbrs) {
+  // Prefer cell closest to arena center, with noise to avoid lock-in
+  return nbrs.reduce((best, k) => {
+    const da = (R(best)-CTR)**2 + (C(best)-CTR)**2;
+    const db = (R(k)-CTR)**2    + (C(k)-CTR)**2;
+    return db + (Math.random()-0.5)*8 < da ? k : best;
   });
-  return c.slice(0, cellsPerTick);
 }
 
-function expand_aggressive(bot) {
-  const c = getCandidates(bot);
-  c.sort((a, b) => {
-    const ea = allNeighbors(R(a), C(a)).filter(k => grid[k] > 0 && grid[k] !== bot.id).length;
-    const eb = allNeighbors(R(b), C(b)).filter(k => grid[k] > 0 && grid[k] !== bot.id).length;
-    return eb !== ea ? eb - ea : Math.random() - 0.5;
+function pick_aggressive(bot, nbrs) {
+  // Prefer cell adjacent to the most enemies
+  return nbrs.reduce((best, k) => {
+    const ea = allNeighbors(R(best),C(best)).filter(n => grid[n]>0 && grid[n]!==bot.id).length;
+    const eb = allNeighbors(R(k),   C(k)   ).filter(n => grid[n]>0 && grid[n]!==bot.id).length;
+    return eb > ea || (eb===ea && Math.random()<0.5) ? k : best;
   });
-  return c.slice(0, cellsPerTick);
 }
 
-function expand_random(bot) {
-  return shuffle(getCandidates(bot)).slice(0, cellsPerTick);
+function pick_random(bot, nbrs) {
+  return nbrs[(Math.random() * nbrs.length) | 0];
 }
 
-function expand_spiral(bot) {
-  const c = getCandidates(bot);
-  c.sort((a, b) => {
-    const aa = ((Math.atan2(R(a) - CTR, C(a) - CTR) - bot.angle + 4 * Math.PI) % (2 * Math.PI));
-    const ab = ((Math.atan2(R(b) - CTR, C(b) - CTR) - bot.angle + 4 * Math.PI) % (2 * Math.PI));
-    return aa - ab;
-  });
-  if (c.length > 0) bot.angle = Math.atan2(R(c[0]) - CTR, C(c[0]) - CTR) + 0.09;
-  return c.slice(0, cellsPerTick);
+function pick_spiral(bot, nbrs) {
+  // Prefer cell that continues the clockwise angular sweep
+  let best = nbrs[0], bestA = Infinity;
+  for (const k of nbrs) {
+    const a = ((Math.atan2(R(k)-CTR, C(k)-CTR) - bot.angle + 4*Math.PI) % (2*Math.PI));
+    if (a < bestA) { bestA = a; best = k; }
+  }
+  bot.angle = Math.atan2(R(best)-CTR, C(best)-CTR) + 0.09;
+  return best;
 }
 
-function expand_wallhugger(bot) {
-  const c = getCandidates(bot);
-  c.sort((a, b) => {
-    return ((R(b)-CTR)**2+(C(b)-CTR)**2) - ((R(a)-CTR)**2+(C(a)-CTR)**2);
-  });
-  return c.slice(0, cellsPerTick);
+function pick_wallhugger(bot, nbrs) {
+  // Prefer cell farthest from arena center (hug the edge)
+  return nbrs.reduce((best, k) =>
+    ((R(k)-CTR)**2+(C(k)-CTR)**2) > ((R(best)-CTR)**2+(C(best)-CTR)**2) ? k : best
+  );
 }
 
-function expand_blob(bot) {
-  const c = getCandidates(bot);
-  c.sort((a, b) => {
-    return ((R(a)-bot.startR)**2+(C(a)-bot.startC)**2) - ((R(b)-bot.startR)**2+(C(b)-bot.startC)**2);
-  });
-  return c.slice(0, cellsPerTick);
+function pick_blob(bot, nbrs) {
+  // Prefer cell closest to own starting corner (compact shape)
+  return nbrs.reduce((best, k) =>
+    ((R(k)-bot.startR)**2+(C(k)-bot.startC)**2) < ((R(best)-bot.startR)**2+(C(best)-bot.startC)**2) ? k : best
+  );
 }
 
-function expand_sniper(bot) {
-  const c = getCandidates(bot);
+function pick_sniper(bot, nbrs) {
+  // Head straight toward the enemy centroid
   const ec = enemyCentroid(bot.id);
-  if (!ec) return shuffle(c).slice(0, cellsPerTick);
+  if (!ec) return nbrs[(Math.random()*nbrs.length)|0];
   const [ey, ex] = ec;
-  c.sort((a, b) => ((R(a)-ey)**2+(C(a)-ex)**2) - ((R(b)-ey)**2+(C(b)-ex)**2));
-  return c.slice(0, cellsPerTick);
+  return nbrs.reduce((best, k) =>
+    ((R(k)-ey)**2+(C(k)-ex)**2) < ((R(best)-ey)**2+(C(best)-ex)**2) ? k : best
+  );
 }
 
-function expand_coward(bot) {
-  const c = getCandidates(bot);
+function pick_coward(bot, nbrs) {
+  // Run away from the enemy centroid
   const ec = enemyCentroid(bot.id);
-  if (!ec) return shuffle(c).slice(0, cellsPerTick);
+  if (!ec) return nbrs[(Math.random()*nbrs.length)|0];
   const [ey, ex] = ec;
-  c.sort((a, b) => ((R(b)-ey)**2+(C(b)-ex)**2) - ((R(a)-ey)**2+(C(a)-ex)**2));
-  return c.slice(0, cellsPerTick);
+  return nbrs.reduce((best, k) =>
+    ((R(k)-ey)**2+(C(k)-ex)**2) > ((R(best)-ey)**2+(C(best)-ex)**2) ? k : best
+  );
 }
 
 const STRATEGY_FNS = [
-  expand_greedy, expand_aggressive, expand_random, expand_spiral,
-  expand_wallhugger, expand_blob, expand_sniper, expand_coward,
+  pick_greedy, pick_aggressive, pick_random, pick_spiral,
+  pick_wallhugger, pick_blob, pick_sniper, pick_coward,
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TICK
 // ═══════════════════════════════════════════════════════════════════════════
-function pruneFrontier(bot) {
-  for (const k of [...bot.frontier])
-    if (emptyNeighbors(R(k), C(k)).length === 0) bot.frontier.delete(k);
-}
 
 // Territory stealing: weakly-held border cells get captured by surrounding enemies
 function resolveConflicts() {
@@ -845,14 +831,8 @@ function resolveConflicts() {
   }
 
   for (const [k, newOwner] of steals) {
-    const oldId = grid[k];
     grid[k] = newOwner;
-    // Move from old frontier to new
-    if (bots[oldId - 1]) bots[oldId - 1].frontier.delete(k);
-    if (bots[newOwner - 1]) {
-      bots[newOwner - 1].frontier.add(k);
-      flash.set(k, bots[newOwner - 1].light);
-    }
+    flash.set(k, bots[newOwner - 1].light);
   }
 }
 
@@ -868,31 +848,33 @@ function tick() {
   for (const i of order) {
     const bot = bots[i];
     bot.stratIdx = botConfigs[i].stratIdx;
+    if (bot.trapped) continue;
 
-    if (!bot.trapped) {
-      const cands = getCandidates(bot);
-      if (cands.length === 0) {
-        bot.trapCount++;
-        if (bot.trapCount >= 4) {
-          bot.trapped = true;
-          tone(220, 0.35, 0.2, 'sawtooth'); // trapped thud
-        }
-      } else {
-        bot.trapCount = 0;
-        const toPlace = STRATEGY_FNS[bot.stratIdx](bot);
-        let headSet = false;
-        for (const k of toPlace) {
-          if (grid[k] !== 0) continue;
-          grid[k] = bot.id;
-          bot.frontier.add(k);
-          flash.set(k, bot.light);
-          if (!headSet) { bot.head = k; headSet = true; }
-        }
+    // Chain-walk: move the single head up to cellsPerTick steps
+    let current = bot.head;
+    let moved = false;
+
+    for (let step = 0; step < cellsPerTick; step++) {
+      const nbrs = emptyNeighbors(R(current), C(current));
+      if (nbrs.length === 0) break;
+      const next = STRATEGY_FNS[bot.stratIdx](bot, nbrs);
+      grid[next] = bot.id;
+      flash.set(next, bot.light);
+      current = next;
+      moved = true;
+    }
+
+    if (!moved) {
+      bot.trapCount++;
+      if (bot.trapCount >= 4) {
+        bot.trapped = true;
+        bot.head = null;
+        tone(220, 0.35, 0.2, 'sawtooth'); // trapped thud
       }
     } else {
-      bot.head = null;
+      bot.trapCount = 0;
+      bot.head = current;
     }
-    if (tickN % 12 === i) pruneFrontier(bot);
   }
 
   // Border conflict: steal weakly-held cells every 3 ticks
@@ -902,10 +884,11 @@ function tick() {
   for (let i = 0; i < grid.length; i++) if (grid[i] === 0) empty++;
 
   const activeBots = bots.filter(b => !b.trapped);
-  const stuck = empty > 0 && activeBots.length > 0 && activeBots.every(b => getCandidates(b).length === 0);
+  const stuck = empty > 0 && activeBots.length > 0 &&
+    activeBots.every(b => b.head !== null && emptyNeighbors(R(b.head), C(b.head)).length === 0);
   const allDone = empty === 0 || activeBots.length === 0;
 
-  if (allDone || tickN > 700 || stuck) { endGame(); return; }
+  if (allDone || tickN > 1200 || stuck) { endGame(); return; }
 
   playTickSound();
   render();
