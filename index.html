@@ -351,6 +351,40 @@ function renderRecFrame() {
       r.fillRect(aLeft + col * cSz + cPad, aTop + row * cSz + cPad, cSz - cPad * 2, cSz - cPad * 2);
     }
   }
+  // ── Head markers on recording canvas ──
+  if (bots) {
+    const pulse = 0.88 + 0.12 * Math.sin(tickN * 0.35);
+    for (const bot of bots) {
+      if (!bot.head || bot.trapped) continue;
+      const hr  = R(bot.head), hc = C(bot.head);
+      const cx  = aLeft + (hc + 0.5) * cSz;
+      const cy  = aTop  + (hr + 0.5) * cSz;
+      const rad = cSz * 0.52 * pulse;
+
+      // Clamp to circle
+      const dx = cx - RL.arenaCX, dy = cy - RL.arenaCY;
+      if (dx * dx + dy * dy > RL.arenaR * RL.arenaR) continue;
+
+      // Glow ring
+      r.beginPath();
+      r.arc(cx, cy, rad * 1.55, 0, Math.PI * 2);
+      r.fillStyle = bot.color + '55';
+      r.fill();
+
+      // Main circle
+      r.beginPath();
+      r.arc(cx, cy, rad, 0, Math.PI * 2);
+      r.fillStyle = bot.light;
+      r.fill();
+
+      // White pupil
+      r.beginPath();
+      r.arc(cx, cy, rad * 0.32, 0, Math.PI * 2);
+      r.fillStyle = '#ffffff';
+      r.fill();
+    }
+  }
+
   r.restore();
 
   // Arena ring shadow
@@ -654,7 +688,7 @@ function initGame() {
       stratIdx: cfg.stratIdx, frontier,
       startR: sr, startC: sc,
       angle: Math.atan2(sr - CTR, sc - CTR),
-      trapped: false, trapCount: 0,
+      trapped: false, trapCount: 0, head: null,
     };
   });
 
@@ -771,13 +805,6 @@ const STRATEGY_FNS = [
 // ═══════════════════════════════════════════════════════════════════════════
 // TICK
 // ═══════════════════════════════════════════════════════════════════════════
-function claim(bot, k) {
-  if (grid[k] !== 0) return;
-  grid[k] = bot.id;
-  bot.frontier.add(k);
-  flash.set(k, bot.light);
-}
-
 function pruneFrontier(bot) {
   for (const k of [...bot.frontier])
     if (emptyNeighbors(R(k), C(k)).length === 0) bot.frontier.delete(k);
@@ -852,8 +879,18 @@ function tick() {
         }
       } else {
         bot.trapCount = 0;
-        for (const k of STRATEGY_FNS[bot.stratIdx](bot)) claim(bot, k);
+        const toPlace = STRATEGY_FNS[bot.stratIdx](bot);
+        let headSet = false;
+        for (const k of toPlace) {
+          if (grid[k] !== 0) continue;
+          grid[k] = bot.id;
+          bot.frontier.add(k);
+          flash.set(k, bot.light);
+          if (!headSet) { bot.head = k; headSet = true; }
+        }
       }
+    } else {
+      bot.head = null;
     }
     if (tickN % 12 === i) pruneFrontier(bot);
   }
@@ -907,6 +944,37 @@ function render() {
       ctx.fillRect(c * CELL + PAD, r * CELL + PAD, FSIZ, FSIZ);
     }
   }
+
+  // ── Head markers ── draw on top of territory
+  if (bots) {
+    const pulse = 0.88 + 0.12 * Math.sin(tickN * 0.35);
+    for (const bot of bots) {
+      if (!bot.head || bot.trapped) continue;
+      const hr = R(bot.head), hc = C(bot.head);
+      const cx = (hc + 0.5) * CELL;
+      const cy = (hr + 0.5) * CELL;
+      const rad = CELL * 0.52 * pulse;
+
+      // Outer glow ring
+      ctx.beginPath();
+      ctx.arc(cx, cy, rad * 1.55, 0, Math.PI * 2);
+      ctx.fillStyle = bot.color + '55';
+      ctx.fill();
+
+      // Main circle
+      ctx.beginPath();
+      ctx.arc(cx, cy, rad, 0, Math.PI * 2);
+      ctx.fillStyle = bot.light;
+      ctx.fill();
+
+      // White pupil
+      ctx.beginPath();
+      ctx.arc(cx, cy, rad * 0.32, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+    }
+  }
+
   ctx.restore();
 }
 
